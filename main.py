@@ -2,129 +2,87 @@ import usb.core
 import usb.util
 from usb.core import Device
 import sys
-
-# Fixed values for different volume levels. Katana uses weird logarithmic scale
-# I couldn't determine so the sniffed values are fixed.
-VOLUME_LEVELS = [
-    0xC000,
-    0xC7BD,
-    0xD0A8,
-    0xD869,
-    0xDC00,
-    0xDEE7,
-    0xE157,
-    0xE370,
-    0xE548,
-    0xE6ED,
-    0xE869,
-    0xE9C3,
-    0xEB01,
-    0xEC27,
-    0xED38,
-    0xEE37,
-    0xEF26,
-    0xF008,
-    0xF0DD,
-    0xF1A7,
-    0xF268,
-    0xF31F,
-    0xF3CE,
-    0xF475,
-    0xF515,
-    0xF5B0,
-    0xF644,
-    0xF6D3,
-    0xF75C,
-    0xF7E1,
-    0xF862,
-    0xF8DF,
-    0xF957,
-    0xF9CC,
-    0xFA3E,
-    0xFAAC,
-    0xFB18,
-    0xFB80,
-    0xFBE6,
-    0xFC49,
-    0xFCAA,
-    0xFD08,
-    0xFD64,
-    0xFDBE,
-    0xFE16,
-    0xFE6C,
-    0xFEC0,
-    0xFF12,
-    0xFF63,
-    0xFFB2,
-    0x0000,
-]
-
-DETACHED_IFACES = [0]
-
-ID_VENDOR = 0x041E  # Creative Technology Ltd
-ID_PRODUCT = 0x3247  # Sound BlasterX Katana
+from src.consts import *
+from src.usb_audio import *
 
 
-def get_device():
-    dev = usb.core.find(idProduct=ID_PRODUCT, idVendor=ID_VENDOR)
+class KatanaAudioControlDriver:
+    def __init__(self):
+        self.dev = self.__get_device()
+        self.__setup_device()
 
-    if type(dev) != Device:
-        print("Error: no device has been found!")
-        sys.exit(1)
+    def __get_device(self):
+        dev = usb.core.find(idProduct=ID_PRODUCT, idVendor=ID_VENDOR)
 
-    return dev
+        if type(dev) != Device:
+            print("Error: no device has been found!")
+            sys.exit(1)
 
+        return dev
 
-def setup_device(dev: Device):
-    """
-    Detaching all drivers is the most reliable solution.
-    """
+    def __setup_device(self):
+        # Detach AudioControl interface
+        if self.dev.is_kernel_driver_active(AUDIO_CONTROL_IFACE):
+            self.dev.detach_kernel_driver(AUDIO_CONTROL_IFACE)
 
-    # for iface in DETACHED_IFACES:
-        # if dev.is_kernel_driver_active(iface):
-            # dev.detach_kernel_driver(iface)
+    def set_volume(self, level: int):
+        """
+        Send two CONTROL transfers (2 channels) to set volume level.
 
-    # Iterate over the interfaces and detach all active ones
-    for iface in dev.get_active_configuration().interfaces():
-        if dev.is_kernel_driver_active(iface.bInterfaceNumber):
-            dev.detach_kernel_driver(iface.bInterfaceNumber)
+        5.2.2.4.1. Set Feature Unit Control Request
+        5.2.2.4.3.2. Volume Control
+        """
+        raw_data = VOLUME_LEVELS[level].to_bytes(2, "little")
 
+        self.dev.ctrl_transfer(
+            bmRequestType=AUDIO_CONTROL_SET,
+            bRequest=SET_CUR,
+            wValue=get_wValue(ControlSelector.VOLUME, channel=1),
+            wIndex=get_wIndex(entity=1, endpoint=0),
+            data_or_wLength=raw_data,
+        )
+        self.dev.ctrl_transfer(
+            bmRequestType=AUDIO_CONTROL_SET,
+            bRequest=SET_CUR,
+            wValue=get_wValue(ControlSelector.VOLUME, channel=2),
+            wIndex=get_wIndex(entity=1, endpoint=0),
+            data_or_wLength=raw_data,
+        )
 
-def set_volume(dev: Device, level: int):
-    """
-    Send two CONTROL transfers to set volume level.
-    """
-    raw_data = VOLUME_LEVELS[level].to_bytes(2, "little")
+    def get_volume(self):
+        """
+        5.2.2.4.3.2. Volume Control
+        """
+        result = self.dev.ctrl_transfer(
+            bmRequestType=AUDIO_CONTROL_GET,
+            bRequest=GET_CUR,
+            wValue=get_wValue(ControlSelector.VOLUME, channel=1),
+            wIndex=get_wIndex(entity=1, endpoint=0),
+            data_or_wLength=2,
+        )
+        value = (result[1] << 8) | result[0]
 
-    print("[+] Start...")
+        return Volume.value_to_level(value)
 
-    dev.ctrl_transfer(
-        bmRequestType=0x21,
-        bRequest=1,
-        wValue=0x0201,
-        wIndex=256,
-        data_or_wLength=raw_data,
-    )
-    # dev.read(0x84, 64, 1000)
+    def get_mute(self):
+        """
+        5.2.2.4.3.1. Mute Control
+        """
+        result = self.dev.ctrl_transfer(
+            bmRequestType=AUDIO_CONTROL_GET,
+            bRequest=GET_CUR,
+            wValue=get_wValue(ControlSelector.MUTE, channel=1),
+            wIndex=get_wIndex(entity=1, endpoint=0),
+            data_or_wLength=1,
+        )
 
-    print("[+] 1st CONTROL sent")
-
-    dev.ctrl_transfer(
-        bmRequestType=0x21,
-        bRequest=1,
-        wValue=0x0202,
-        wIndex=256,
-        data_or_wLength=raw_data,
-    )
-    # dev.read(0x84, 64, 1000)
-
-
-    print("[+] 2nd CONTROL sent")
+        return bool(result[0])
 
 
 if __name__ == "__main__":
-    dev = get_device()
-    # setup_device(dev)
-    set_volume(dev, 5)
+    dev = KatanaAudioControlDriver()
+    print(dev.get_volume())
+    dev.set_volume(13)
+    print(dev.get_volume())
 
     exit()
